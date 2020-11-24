@@ -1,0 +1,13 @@
+[
+  {
+    "name": "PHPSESSID",
+    "value": "2ed517186021963a1bcb469782bb4e7f",
+    "domain": "csgopolygon.gg",
+    "path": "/",
+    "expires": -1,
+    "size": 41,
+    "httpOnly": false,
+    "secure": false,
+    "session": true
+  }
+]
