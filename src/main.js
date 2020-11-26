@@ -1,233 +1,248 @@
-const puppeteer = require('puppeteer');
-const fs = require('fs').promises;
-const $ = require('cheerio');
-const { sleep, terminalNotification } = require('./util/functions');
+const puppeteer = require('puppeteer')
+const path = require('path')
+const fs = require('fs').promises
+const fsSync = require('fs')
+const $ = require('cheerio')
+const { sleep, terminalNotification, subscribe, dateFormatter } = require('./util/subfunctions')
 
-const MINIMAL_STREAK = 3;
-const INITIAL_BET_AMOUNT = 2;
+const MINIMAL_STREAK = 3
+const INITIAL_BET_AMOUNT = 2
+
+const history = []
 
 const state = {
-  balls: [],
+  ballsPool: [],
 
-  red: {
-    value: 0,
-    streak: false,
+  streak: {
+    red: {
+      counter: 0,
+      isCountingAllowed: true,
+    },
+    black: {
+      counter: 0,
+      isCountingAllowed: true,
+    },
   },
-  black: {
-    value: 0,
-    streak: false,
+
+  game: {
+    currentWinnerColor: undefined,
+    prevWinnerColor: undefined,
+
+    prevActualCounter: 0,
+
+    wallet: undefined,
+    initialWallet: undefined,
   },
-  stopStreak: function (color) {
-    this[color].streak = false;
+
+  resetToInitialValues: function () {
+    console.clear()
+
+    this.ballsPool = []
+
+    this.streak.red.counter = 0
+    this.streak.red.isCountingAllowed = true
+    this.streak.black.counter = 0
+    this.streak.black.isCountingAllowed = true
   },
 
   bet: {
     isStarted: false,
-    counter: 0,
+    iterations: 0,
+    wins: 0,
     amount: INITIAL_BET_AMOUNT,
-    color: undefined,
   },
-  // If this.bet.isStarted false do:
-  startBet: function () {
-    this.bet.isStarted = true;
-  },
-  // If this.red.value less than MINIMAL_STREAK do:
+
   resetBet: function () {
-    this.bet.isStarted = false;
-    this.bet.amount = INITIAL_BET_AMOUNT;
-    this.bet.counter = 0;
-    this.bet.color = undefined;
-  },
-  initializeBet: function (color) {
-    this.bet.counter += 1;
-    this.bet.color = color;
-  },
-  // If this.bet.isStarted true do:
-  lose: function () {
-    this.bet.amount *= 2;
+    this.bet.isStarted = false
+    this.bet.counter = 0
+    this.bet.amount = INITIAL_BET_AMOUNT
   },
 
-  isUpdated: false,
-  update: function () {
-    this.isUpdated = true;
-  },
-  newRound: function () {
-    // console.clear();
-
-    this.balls = [];
-    this.isUpdated = false;
-
-    this.red.value = 0;
-    this.black.value = 0;
-    this.red.streak = true;
-    this.black.streak = true;
-  },
-};
+  connectionLostKeeperProcess: false,
+}
 
 async function initializeBrowser() {
   const browser = await puppeteer.launch({
     headless: false,
     defaultViewport: null,
-    args: [
-      '--window-size=1920,1080',
-      '--window-position=-1921,0',
-      '--incognito',
-    ],
-  });
+    args: ['--window-size=1920,1080', '--window-position=-1921,30', '--incognito'],
+  })
 
-  const page = await browser.newPage();
-  await page.goto('https://csgopolygon.gg/');
-  await page.exposeFunction('onBallsUpdate', () => state.update());
-  await page.exposeFunction('onChatUpdate', async (text) => {
-    if (String(text).includes('Server Connection lost')) {
-      console.log('Connection has been lost. Reloading page.');
-      await page.reload();
-    }
-  });
+  const [page] = await browser.pages()
+  await page.goto('https://csgopolygon.gg/')
 
-  return page;
+  return page
 }
 
 async function loginViaCookies(page) {
-  const cookiesString = await fs.readFile('./src/util/cookies.json');
-  const cookies = await JSON.parse(cookiesString);
-  await page.setCookie(...cookies);
-  await page.reload();
-  await sleep(100);
+  const cookiesString = await fs.readFile('./src/util/cookies.json')
+  const cookies = await JSON.parse(cookiesString)
+  await page.setCookie(...cookies)
+  await page.reload()
+  await sleep(100)
 
-  return page;
-}
-
-async function subscriptions(page) {
-  await page.evaluate(() => {
-    $('ul.balls').bind('DOMSubtreeModified', () => window.onBallsUpdate());
-    $('div.messages').bind('DOMSubtreeModified', (e) =>
-      window.onChatUpdate(e.currentTarget.textContent.trim())
-    );
-  });
-
-  return page;
+  return page
 }
 
 const makeBet = async (color, page) => {
-  await sleep(5000);
+  if (color === 'red') {
+    state.bet.iterations += 1
+
+    if (state.bet.isStarted) {
+      console.log('Делаю повторную ставку на красное')
+      state.bet.amount *= 2
+    } else {
+      console.log('Делаю начальную ставку на красное')
+      state.bet.isStarted = true
+    }
+  } else {
+    state.bet.iterations += 1
+
+    if (state.bet.isStarted) {
+      console.log('Делаю повторную ставку на черное.')
+      state.bet.amount *= 2
+    } else {
+      console.log('Делаю начальную ставку на черное.')
+      state.bet.isStarted = true
+    }
+  }
+
+  const input = await page.$('#roulette_amount')
+  await input.click({ clickCount: 3 })
+  await input.type(String(state.bet.amount))
+
+  // Sleep if button disabled
+  const node = await page.$eval('div.rounds', (el) => el.innerHTML)
+  if ($('.red_button.betButton', node).attr('disabled')) await sleep(5000)
+  else await sleep(500)
 
   if (color === 'red') {
-    state.initializeBet(color);
-
-    if (state.bet.isStarted) {
-      console.log('Делаю повторную ставку на красное');
-      state.lose();
-    } else {
-      console.log('Делаю начальную ставку на красное');
-      state.startBet();
-    }
+    page.click('.red_button.betButton')
   } else {
-    state.initializeBet(color);
-
-    if (state.bet.isStarted) {
-      console.log('Делаю повторную ставку на черное');
-      state.lose();
-    } else {
-      console.log('Делаю начальную ставку на черное');
-      state.startBet();
-    }
+    page.click('.dark_button.betButton')
   }
-
-  // await page.focus('#roulette_amount');
-  // page.keyboard.type(String(state.bet.amount));
-
-  const input = await page.$('#roulette_amount');
-  await input.click({ clickCount: 3 });
-  await input.type(String(state.bet.amount));
-
-  if (color === 'red') page.click('.red_button.betButton');
-  else page.click('.dark_button.betButton');
-};
-
-const gameHandler = (page) => {
-  let ballsReverse = [...state.balls];
-  ballsReverse.reverse();
-
-  ballsReverse.forEach((el) => {
-    state.red.streak && (el[0] === 'red' || el[0] === 'green')
-      ? (state.red.value += 1)
-      : state.stopStreak('red');
-
-    state.black.streak && (el[0] === 'dark' || el[0] === 'green')
-      ? (state.black.value += 1)
-      : state.stopStreak('black');
-  });
-
-  const { red, black } = state;
-
-  if (red.value > black.value) {
-    if (red.value > MINIMAL_STREAK) {
-      console.log(
-        `Gonna bet on black color, cause red streak is ${state.red.value}`
-      );
-      makeBet('black', page);
-    } else {
-      state.resetBet();
-      console.log(
-        `Gonna wait until red streak is more than ${MINIMAL_STREAK} (Current streak is ${state.red.value})`
-      );
-    }
-  } else {
-    if (black.value > MINIMAL_STREAK) {
-      console.log(
-        `Gonna bet on red color, cause black streak is ${state.black.value}`
-      );
-      makeBet('red', page);
-    } else {
-      state.resetBet();
-      console.log(
-        `Gonna wait until black streak is more than ${MINIMAL_STREAK} (Current streak is ${state.black.value})`
-      );
-    }
-  }
-};
-
-async function monitor(page) {
-  console.clear();
-  console.log('Waiting for a new round...');
-
-  state.update();
-
-  setInterval(async () => {
-    if (state.isUpdated) {
-      // Bring to default values
-      state.newRound();
-
-      // Refetch current node
-      const node = await page.evaluate(
-        () => document.querySelector('ul.balls').innerHTML
-      );
-
-      // Push balls to state
-      $('.ball span', node).each(function () {
-        state.balls.push([$(this).attr('class'), $(this).text()]);
-      });
-
-      gameHandler(page);
-
-      terminalNotification(state);
-
-      await sleep(6000);
-      console.log('Bet: ', state.bet, '\n');
-    }
-  }, 200);
 }
 
-new Promise((res, rej) => {
-  res(initializeBrowser());
-})
+const newRoundHandler = async (page) => {
+  /** Gate of lost connection */
+  if (state.connectionLostKeeperProcess === true) return
+  else state.connectionLostKeeperProcess = true
+
+  state.resetToInitialValues()
+
+  // Wallet handler
+  const currentWallet = await page.$eval('i#balance_p', (el) => el.innerHTML)
+  state.game.wallet = currentWallet
+  if (state.game.initialWallet == null) state.game.initialWallet = currentWallet
+
+  // Refetch current node
+  const node = await page.$eval('ul.balls', (el) => el.innerHTML)
+  $('.ball span', node).each(function (i) {
+    if (i === 9) state.game.currentWinnerColor = $(this).attr('class')
+    if (i === 8) state.game.prevWinnerColor = $(this).attr('class')
+    state.ballsPool.push([$(this).attr('class'), $(this).text()])
+  })
+
+  // Fill streak state
+  const revercedPool = [...state.ballsPool].reverse()
+  revercedPool.forEach((el) => {
+    state.streak.red.isCountingAllowed && (el[0] === 'red' || el[0] === 'green')
+      ? (state.streak.red.counter += 1)
+      : (state.streak.red.isCountingAllowed = false)
+
+    state.streak.black.isCountingAllowed && (el[0] === 'dark' || el[0] === 'green')
+      ? (state.streak.black.counter += 1)
+      : (state.streak.black.isCountingAllowed = false)
+  })
+
+  // Which color winner handler
+  const { red, black } = state.streak
+  if (red.counter > black.counter) {
+    if (red.counter > MINIMAL_STREAK) {
+      /** Is winner handler */
+      state.game.prevActualCounter = red.counter
+
+      console.log(`Собираюсь совершить ставку на черное. (На данный момент стрик красных составляет ${state.streak.red.counter})`)
+      makeBet('black', page)
+    } else {
+      /** Is winner handler */
+      if (red.counter < state.game.prevActualCounter) {
+        console.log(`Победа красных (\x1b[32m+${INITIAL_BET_AMOUNT}\x1b[0m)`)
+        state.game.prevActualCounter = 0
+        state.bet.wins += 1
+      }
+
+      console.log(
+        `Жду пока стрик красных будет больше ${MINIMAL_STREAK}. (На данный момент он составляет ${state.streak.red.counter})`,
+      )
+      state.resetBet()
+    }
+  } else {
+    if (black.counter > MINIMAL_STREAK) {
+      /** Is winner handler */
+      state.game.prevActualCounter = black.counter
+
+      console.log(
+        `Собираюсь совершить ставку на красное. (На данный момент стрик черных составляет ${state.streak.black.counter})`,
+      )
+      makeBet('red', page)
+    } else {
+      /** Is winner handler */
+      if (black.counter < state.game.prevActualCounter) {
+        console.log(`Победа черных (\x1b[32m+${INITIAL_BET_AMOUNT}\x1b[0m)`)
+        state.game.prevActualCounter = 0
+        state.bet.wins += 1
+      }
+
+      console.log(
+        `Жду пока стрик черных будет больше ${MINIMAL_STREAK}. (На данный момент он составляет ${state.streak.black.counter})`,
+      )
+      state.resetBet()
+    }
+  }
+
+  terminalNotification(state)
+  history.push({
+    pool: state.ballsPool,
+    wallet: state.game.wallet,
+  })
+}
+
+async function initializeBot(page) {
+  subscribe(
+    'ul.balls',
+    (newVal) => String(newVal).includes('data-rollid') && newRoundHandler(page),
+    (cb, newVal, prevValue) => newVal !== prevValue && cb(newVal),
+    page,
+  )
+
+  subscribe(
+    'div.messages',
+    async () =>
+      await page.reload({ waitUntil: ['networkidle0'] }).then(() => console.log('Connection has been lost. Reloading page.')),
+    (cb, newVal) => String(newVal).includes('onnection') && cb(),
+    page,
+  )
+
+  subscribe(
+    'span.progress_timer',
+    () => (state.connectionLostKeeperProcess = false),
+    (cb, newVal, prevValue) => String(newVal).includes('***ROLLING***') && newVal !== prevValue && cb(),
+    page,
+  )
+}
+
+initializeBrowser()
   .then((page) => loginViaCookies(page))
-  .then((page) => subscriptions(page))
-  .then((page) => monitor(page))
-  .catch((err) => console.log(err));
+  .then((page) => initializeBot(page))
+  .catch((err) => console.log(err))
 
 process.on('SIGINT', function () {
-  console.log('\nGracefully shutting down from SIGINT (Ctrl-C)');
-  process.exit(1);
-});
+  console.log('Saving history before completion.')
+  fsSync.writeFileSync(
+    `${dateFormatter.format(Date.now()).replace(/(, )/g, '.').replace(/(:)/g, '-')}.json`,
+    JSON.stringify(history),
+  )
+  console.log('\nGracefully shutting down from SIGINT (Ctrl-C)')
+  process.exit(1)
+})
