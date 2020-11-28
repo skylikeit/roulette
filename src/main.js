@@ -213,7 +213,7 @@ const newRoundHandler = async (page) => {
       } else {
         /** Is winner handler */
         if (red.counter < state.game.prevActualCounter) {
-          console.log(`Победа красных (+${colors.green(INITIAL_BET_AMOUNT)})`)
+          console.log(`Победа красных (${colors.green('+' + INITIAL_BET_AMOUNT)})`)
           state.game.prevActualCounter = 0
           state.bet.wins += 1
         }
@@ -228,7 +228,7 @@ const newRoundHandler = async (page) => {
       } else {
         /** Is winner handler */
         if (black.counter < state.game.prevActualCounter) {
-          console.log(`Победа черных (+${colors.green(INITIAL_BET_AMOUNT)})`)
+          console.log(`Победа черных (${colors.green('+' + INITIAL_BET_AMOUNT)})`)
           state.game.prevActualCounter = 0
           state.bet.wins += 1
         }
@@ -283,7 +283,7 @@ process.on('SIGINT', async () => {
   fs.mkdir(__dirname + '/../history', (err) => err && console.log(err))
   fs.writeFile(
     __dirname + `/../history/${dateFormatter.format(Date.now()).replace(/(, )/g, '.').replace(/(:)/g, '-')}.json`,
-    'Hey there!',
+    JSON.stringify(history),
     (err) => err && console.log(err),
   )
   process.exit(1)
