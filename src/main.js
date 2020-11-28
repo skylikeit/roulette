@@ -1,5 +1,5 @@
 const fs = require('fs')
-const fsAsync = require('fs').promises
+const fsPromises = fs.promises
 
 const puppeteer = require('puppeteer')
 const $ = require('cheerio')
@@ -113,7 +113,7 @@ async function initializeBrowser() {
 }
 
 async function loginViaCookies(page) {
-  const cookiesString = await fsAsync.readFile('./src/util/cookies.json')
+  const cookiesString = await fsPromises.readFile('./src/util/cookies.json')
   const cookies = await JSON.parse(cookiesString)
   cookies[0].value = COOKIE_ID
   await page.setCookie(...cookies)
@@ -240,7 +240,7 @@ const newRoundHandler = async (page) => {
   await revealWinnerHandler(state)
 
   history.push({
-    pool: state.ballsPool,
+    ball: state.ballsPool[state.ballsPool.length - 1],
     wallet: state.game.wallet,
   })
 
@@ -277,9 +277,14 @@ initializeBrowser()
   .then((page) => initializeBot(page))
   .catch((err) => console.log(err))
 
-process.on('SIGINT', function () {
+process.on('SIGINT', async () => {
   console.log('Saving history before completion.')
-  fs.writeFileSync(`${dateFormatter.format(Date.now()).replace(/(, )/g, '.').replace(/(:)/g, '-')}.json`, JSON.stringify(history))
-  console.log('\nGracefully shutting down from SIGINT (Ctrl-C)')
+
+  fs.mkdir(__dirname + '/../history', (err) => err && console.log(err))
+  fs.writeFile(
+    __dirname + `/../history/${dateFormatter.format(Date.now()).replace(/(, )/g, '.').replace(/(:)/g, '-')}.json`,
+    'Hey there!',
+    (err) => err && console.log(err),
+  )
   process.exit(1)
 })
