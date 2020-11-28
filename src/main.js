@@ -1,15 +1,20 @@
+const fs = require('fs')
+const fsAsync = require('fs').promises
+
 const puppeteer = require('puppeteer')
-const path = require('path')
-const fs = require('fs').promises
-const fsSync = require('fs')
 const $ = require('cheerio')
-const { sleep, terminalNotification, subscribe, dateFormatter } = require('./util/subfunctions')
+const inquirer = require('inquirer')
+const colors = require('colors')
+
+const { subscribe } = require('./util/subFunctions')
+const { sleep, terminalNotification, dateFormatter } = require('./util/utilityFunctions')
 
 const MINIMAL_STREAK = 3
-const INITIAL_BET_AMOUNT = 2
+const INITIAL_BET_AMOUNT = 8
+let STARTUP_MODE = undefined
+let COOKIE_ID = undefined
 
 const history = []
-
 const state = {
   ballsPool: [],
 
@@ -35,8 +40,6 @@ const state = {
   },
 
   resetToInitialValues: function () {
-    console.clear()
-
     this.ballsPool = []
 
     this.streak.red.counter = 0
@@ -62,12 +65,47 @@ const state = {
 }
 
 async function initializeBrowser() {
+  /** Initial dialog */
+  await inquirer
+    .prompt([
+      {
+        type: 'list',
+        name: 'mode',
+        message: 'Which mode do you want to use?',
+        choices: ['Headless', 'Browser'],
+      },
+      {
+        type: 'list',
+        name: 'cookie',
+        message: 'Select the appropriate account.',
+        choices: [
+          { name: 'Main (edikm3)', value: 'cb42aae19ac47d49b00af92303cbcde1' },
+          { name: 'Alex (alexvalkov)', value: 'e4055d2386a3efae0fe1507853f9e31c' },
+          { name: 'Dev (skylikeit)', value: '141691fc4f290ff7f7df9531348957d3' },
+          new inquirer.Separator(),
+          { name: 'Enter it below', value: false },
+        ],
+      },
+    ])
+    .then(async ({ mode, cookie }) => {
+      STARTUP_MODE = mode
+      cookie
+        ? (COOKIE_ID = cookie)
+        : (COOKIE_ID = await inquirer
+            .prompt({
+              type: 'input',
+              name: 'enteredCookie',
+              message: 'Enter cookieID.',
+            })
+            .then(({ enteredCookie }) => enteredCookie))
+    })
+
+  /** Puppeteer initialize */
   const browser = await puppeteer.launch({
-    headless: false,
+    headless: STARTUP_MODE === 'Headless' ? true : false,
     defaultViewport: null,
     args: ['--window-size=1920,1080', '--window-position=-1921,30', '--incognito'],
   })
-
   const [page] = await browser.pages()
   await page.goto('https://csgopolygon.gg/')
 
@@ -75,8 +113,9 @@ async function initializeBrowser() {
 }
 
 async function loginViaCookies(page) {
-  const cookiesString = await fs.readFile('./src/util/cookies.json')
+  const cookiesString = await fsAsync.readFile('./src/util/cookies.json')
   const cookies = await JSON.parse(cookiesString)
+  cookies[0].value = COOKIE_ID
   await page.setCookie(...cookies)
   await page.reload()
   await sleep(100)
@@ -89,21 +128,21 @@ const makeBet = async (color, page) => {
     state.bet.iterations += 1
 
     if (state.bet.isStarted) {
-      console.log('Делаю повторную ставку на красное')
       state.bet.amount *= 2
+      console.log(`Делаю повторную ставку, размером ${state.bet.amount}, на красное`)
     } else {
-      console.log('Делаю начальную ставку на красное')
       state.bet.isStarted = true
+      console.log(`Делаю начальную ставку, размером ${state.bet.amount}, на красное.`)
     }
   } else {
     state.bet.iterations += 1
 
     if (state.bet.isStarted) {
-      console.log('Делаю повторную ставку на черное.')
       state.bet.amount *= 2
+      console.log(`Делаю повторную ставку, размером ${state.bet.amount}, на черное.`)
     } else {
-      console.log('Делаю начальную ставку на черное.')
       state.bet.isStarted = true
+      console.log(`Делаю начальную ставку, размером ${state.bet.amount}, на черное.`)
     }
   }
 
@@ -128,84 +167,85 @@ const newRoundHandler = async (page) => {
   if (state.connectionLostKeeperProcess === true) return
   else state.connectionLostKeeperProcess = true
 
+  console.clear()
+
   state.resetToInitialValues()
 
-  // Wallet handler
-  const currentWallet = await page.$eval('i#balance_p', (el) => el.innerHTML)
-  state.game.wallet = currentWallet
-  if (state.game.initialWallet == null) state.game.initialWallet = currentWallet
+  const pushToStateCurrentBalanceHandler = async (page, state) => {
+    const currentWallet = await page.$eval('i#balance_p', (el) => el.innerHTML)
+    state.game.wallet = currentWallet
+    if (state.game.initialWallet == null) state.game.initialWallet = currentWallet
+  }
+  await pushToStateCurrentBalanceHandler(page, state)
 
-  // Refetch current node
-  const node = await page.$eval('ul.balls', (el) => el.innerHTML)
-  $('.ball span', node).each(function (i) {
-    if (i === 9) state.game.currentWinnerColor = $(this).attr('class')
-    if (i === 8) state.game.prevWinnerColor = $(this).attr('class')
-    state.ballsPool.push([$(this).attr('class'), $(this).text()])
-  })
+  const pushToStateCurrentBallsPoolHandler = async (page, state) => {
+    const node = await page.$eval('ul.balls', (el) => el.innerHTML)
+    $('.ball span', node).each(function (i) {
+      if (i === 9) state.game.currentWinnerColor = $(this).attr('class')
+      if (i === 8) state.game.prevWinnerColor = $(this).attr('class')
+      state.ballsPool.push([$(this).attr('class'), $(this).text()])
+    })
+  }
+  await pushToStateCurrentBallsPoolHandler(page, state)
 
-  // Fill streak state
-  const revercedPool = [...state.ballsPool].reverse()
-  revercedPool.forEach((el) => {
-    state.streak.red.isCountingAllowed && (el[0] === 'red' || el[0] === 'green')
-      ? (state.streak.red.counter += 1)
-      : (state.streak.red.isCountingAllowed = false)
+  const calculateCurrentStreaksOfColorsHandler = async (state) => {
+    const revercedPool = [...state.ballsPool].reverse()
+    revercedPool.forEach((el) => {
+      state.streak.red.isCountingAllowed && (el[0] === 'red' || el[0] === 'green')
+        ? (state.streak.red.counter += 1)
+        : (state.streak.red.isCountingAllowed = false)
 
-    state.streak.black.isCountingAllowed && (el[0] === 'dark' || el[0] === 'green')
-      ? (state.streak.black.counter += 1)
-      : (state.streak.black.isCountingAllowed = false)
-  })
+      state.streak.black.isCountingAllowed && (el[0] === 'dark' || el[0] === 'green')
+        ? (state.streak.black.counter += 1)
+        : (state.streak.black.isCountingAllowed = false)
+    })
+  }
+  await calculateCurrentStreaksOfColorsHandler(state)
 
-  // Which color winner handler
-  const { red, black } = state.streak
-  if (red.counter > black.counter) {
-    if (red.counter > MINIMAL_STREAK) {
-      /** Is winner handler */
-      state.game.prevActualCounter = red.counter
-
-      console.log(`Собираюсь совершить ставку на черное. (На данный момент стрик красных составляет ${state.streak.red.counter})`)
-      makeBet('black', page)
-    } else {
-      /** Is winner handler */
-      if (red.counter < state.game.prevActualCounter) {
-        console.log(`Победа красных (\x1b[32m+${INITIAL_BET_AMOUNT}\x1b[0m)`)
-        state.game.prevActualCounter = 0
-        state.bet.wins += 1
+  // Reveal winner
+  const revealWinnerHandler = async (state) => {
+    const { red, black } = state.streak
+    if (red.counter > black.counter) {
+      if (red.counter > MINIMAL_STREAK) {
+        /** Is winner handler */
+        state.game.prevActualCounter = red.counter
+        makeBet('black', page)
+      } else {
+        /** Is winner handler */
+        if (red.counter < state.game.prevActualCounter) {
+          console.log(`Победа красных (+${colors.green(INITIAL_BET_AMOUNT)})`)
+          state.game.prevActualCounter = 0
+          state.bet.wins += 1
+        }
+        console.log(`Жду пока стрик красных будет больше ${MINIMAL_STREAK}. (Текущий стрик ${state.streak.red.counter})`)
+        state.resetBet()
       }
-
-      console.log(
-        `Жду пока стрик красных будет больше ${MINIMAL_STREAK}. (На данный момент он составляет ${state.streak.red.counter})`,
-      )
-      state.resetBet()
-    }
-  } else {
-    if (black.counter > MINIMAL_STREAK) {
-      /** Is winner handler */
-      state.game.prevActualCounter = black.counter
-
-      console.log(
-        `Собираюсь совершить ставку на красное. (На данный момент стрик черных составляет ${state.streak.black.counter})`,
-      )
-      makeBet('red', page)
     } else {
-      /** Is winner handler */
-      if (black.counter < state.game.prevActualCounter) {
-        console.log(`Победа черных (\x1b[32m+${INITIAL_BET_AMOUNT}\x1b[0m)`)
-        state.game.prevActualCounter = 0
-        state.bet.wins += 1
+      if (black.counter > MINIMAL_STREAK) {
+        /** Is winner handler */
+        state.game.prevActualCounter = black.counter
+        makeBet('red', page)
+      } else {
+        /** Is winner handler */
+        if (black.counter < state.game.prevActualCounter) {
+          console.log(`Победа черных (+${colors.green(INITIAL_BET_AMOUNT)})`)
+          state.game.prevActualCounter = 0
+          state.bet.wins += 1
+        }
+        console.log(`Жду пока стрик черных будет больше ${MINIMAL_STREAK}. (Текущий стрик ${state.streak.black.counter})`)
+        state.resetBet()
       }
-
-      console.log(
-        `Жду пока стрик черных будет больше ${MINIMAL_STREAK}. (На данный момент он составляет ${state.streak.black.counter})`,
-      )
-      state.resetBet()
     }
   }
+  await revealWinnerHandler(state)
 
-  terminalNotification(state)
   history.push({
     pool: state.ballsPool,
     wallet: state.game.wallet,
   })
+
+  await sleep(100)
+  terminalNotification(state)
 }
 
 async function initializeBot(page) {
@@ -239,10 +279,7 @@ initializeBrowser()
 
 process.on('SIGINT', function () {
   console.log('Saving history before completion.')
-  fsSync.writeFileSync(
-    `${dateFormatter.format(Date.now()).replace(/(, )/g, '.').replace(/(:)/g, '-')}.json`,
-    JSON.stringify(history),
-  )
+  fs.writeFileSync(`${dateFormatter.format(Date.now()).replace(/(, )/g, '.').replace(/(:)/g, '-')}.json`, JSON.stringify(history))
   console.log('\nGracefully shutting down from SIGINT (Ctrl-C)')
   process.exit(1)
 })

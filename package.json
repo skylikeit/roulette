@@ -5,9 +5,9 @@
   "author": "Kira Bamberg <kapujino@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "axios": "^0.21.0",
     "cheerio": "^1.0.0-rc.3",
     "colors": "^1.4.0",
+    "inquirer": "^7.3.3",
     "puppeteer": "^5.5.0"
   },
   "scripts": {
